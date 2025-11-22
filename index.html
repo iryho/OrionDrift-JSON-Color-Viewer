@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON Color Preset Viewer</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the dropzone */
+        #drop-zone {
+            transition: all 0.2s ease-in-out;
+            border-style: dashed;
+        }
+        /* Dark Mode styles for drop zone */
+        #drop-zone.drag-over {
+            border-color: theme('colors.teal.400');
+            background-color: theme('colors.gray.700');
+            transform: scale(1.02);
+        }
+        
+        /* Custom scrollbar for the results area - Dark Mode */
+        #results-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        #results-container::-webkit-scrollbar-thumb {
+            background: #4b5563; /* gray-600 */
+            border-radius: 4px;
+        }
+        #results-container::-webkit-scrollbar-track {
+            background: #1f2937; /* gray-800 */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 font-sans min-h-screen p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-teal-400">Color Preset Data Viewer</h1>
+            <p class="text-lg text-gray-400 mt-2">Drag and drop your JSON metadata file to inspect color details.</p>
+        </header>
+
+        <!-- Drop Zone -->
+        <div id="drop-zone" class="p-10 text-center border-2 border-gray-700 rounded-xl bg-gray-800 shadow-2xl cursor-pointer hover:shadow-xl transition-shadow duration-300">
+            <svg class="mx-auto h-12 w-12 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v8" />
+            </svg>
+            <p class="mt-1 text-sm text-gray-300 font-semibold">
+                Drag and drop your JSON file here, or click to select file
+            </p>
+            <p class="text-xs text-gray-500">File must be a valid JSON structure (.json)</p>
+            <input type="file" id="file-input" accept=".json" class="hidden" />
+        </div>
+
+        <!-- Alert/Feedback Area -->
+        <div id="message-box" class="mt-6 text-center text-sm">
+            <!-- Messages will appear here -->
+        </div>
+        
+        <!-- Search Bar -->
+        <div class="mt-8 mb-6">
+            <input type="text" id="search-input" placeholder="Search presets by name or ID..."
+                   class="w-full p-3 rounded-xl bg-gray-700 text-gray-200 border border-gray-600 focus:border-teal-500 focus:ring focus:ring-teal-500/50 transition duration-150 shadow-inner"
+                   disabled />
+        </div>
+
+        <!-- Results Area -->
+        <div id="results-container" class="max-h-[80vh] overflow-y-auto pr-2">
+            <!-- Color presets will be rendered here -->
+            <p id="placeholder-text" class="text-center text-gray-500 p-10">Drop a file above to see the extracted color presets.</p>
+        </div>
+
+    </div>
+
+    <script>
+        // --- Core Application Logic ---
+
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const resultsContainer = document.getElementById('results-container');
+        const messageBox = document.getElementById('message-box');
+        const placeholderText = document.getElementById('placeholder-text');
+        const searchInput = document.getElementById('search-input');
+
+        // Global variable to store parsed data structure (the 'Rows' object)
+        let allPresets = {};
+
+        // Utility: Convert 0.0-1.0 float to 0-255 integer
+        const floatTo255 = (f) => Math.round(f * 255);
+
+        // Utility: Copies text to clipboard
+        const copyHexString = (text, name) => {
+            try {
+                // Create a temporary input element
+                const tempInput = document.createElement('textarea');
+                tempInput.value = text;
+                document.body.appendChild(tempInput);
+                tempInput.select();
+                
+                // Use document.execCommand('copy') for better compatibility in Canvas
+                const successful = document.execCommand('copy');
+                document.body.removeChild(tempInput);
+
+                if (successful) {
+                    displayMessage(`Copied Hex String for <strong>${name}</strong>: <code>${text}</code>`, false);
+                } else {
+                    displayMessage(`Failed to copy text. Please copy manually: <code>${text}</code>`, true);
+                }
+            } catch (err) {
+                console.error('Copy failed:', err);
+                displayMessage(`Copy failed. Error: ${err.message}`, true);
+            }
+        };
+
+
+        // Utility: Display error or success message
+        const displayMessage = (text, isError = false) => {
+            const classes = isError ? 'bg-red-900/50 border-red-600 text-red-300' : 'bg-green-900/50 border-green-600 text-green-300';
+
+            messageBox.innerHTML = `
+                <div class="p-3 rounded-lg ${classes} border backdrop-blur-sm">
+                    ${text}
+                </div>
+            `;
+            // Clear message after 5 seconds
+            setTimeout(() => {
+                messageBox.innerHTML = '';
+            }, 5000);
+        };
+
+        // Renders a single color swatch panel - Updated styles (smaller, rectangular, HEX only)
+        const renderColorSwatch = (colorName, colorData) => {
+            if (!colorData || !colorData.Hex || colorData.R === undefined) {
+                return ''; // Skip if color data is missing
+            }
+
+            const hex = colorData.Hex.toUpperCase();
+
+            return `
+                <div class="flex items-center space-x-3 p-2 bg-gray-700/50 rounded-lg shadow-inner border border-gray-700">
+                    <!-- Color Swatch (Smaller) -->
+                    <div class="w-8 h-8 rounded-md border-2 border-gray-600 flex-shrink-0" style="background-color: #${hex};"></div>
+
+                    <!-- Color Details (HEX only) -->
+                    <div class="flex-grow min-w-0">
+                        <p class="text-xs font-medium text-gray-300 truncate">${colorName}</p>
+                        <!-- HEX only line -->
+                        <p class="text-xs font-mono text-teal-400 truncate">#${hex}</p>
+                    </div>
+                </div>
+            `;
+        };
+
+        // Renders a full color preset card - Updated styles and copy button
+        const renderPresetCard = (presetId, preset) => {
+            const displayName = preset.DisplayName || presetId;
+            
+            // Extract and format the four hex codes for the copy function
+            const primaryHex = (preset.PrimaryColor?.Hex || '000000').toUpperCase();
+            const secondaryHex = (preset.SecondaryColor?.Hex || '000000').toUpperCase();
+            const tertiaryHex = (preset.TertiaryColor?.Hex || '000000').toUpperCase();
+            const emissiveHex = (preset.EmissiveColor?.Hex || '000000').toUpperCase();
+
+            // Desired format: "#HEX1, #HEX2, #HEX3, #HEX4"
+            const hexString = `#${primaryHex}, #${secondaryHex}, #${tertiaryHex}, #${emissiveHex}`;
+
+            // Escape the string for use in HTML onclick attribute
+            const escapedHexString = hexString.replace(/"/g, '&quot;').replace(/'/g, '\\\'');
+
+
+            const colorsHtml = [
+                renderColorSwatch('Primary Color', preset.PrimaryColor),
+                renderColorSwatch('Secondary Color', preset.SecondaryColor),
+                renderColorSwatch('Tertiary Color', preset.TertiaryColor),
+                renderColorSwatch('Emissive Color', preset.EmissiveColor),
+            ].join('');
+
+            // Reduced overall padding from p-6 to p-4 and gap from 4 to 3
+            return `
+                <div class="bg-gray-800 border-t-4 border-teal-500 rounded-2xl shadow-2xl p-4 flex flex-col transition-all duration-200 hover:shadow-teal-500/20 hover:scale-[1.01]">
+                    <h2 class="text-xl font-bold text-teal-400 mb-2">${displayName}</h2>
+                    
+                    <div class="flex justify-between items-start mb-3">
+                        <p class="text-xs text-gray-500 font-mono pr-4 truncate" title="${presetId}">${presetId}</p>
+                        
+                        <!-- Copy Hex String Button -->
+                        <button onclick="copyHexString('${escapedHexString}', '${displayName}')" 
+                                class="px-3 py-1 text-xs font-medium text-white bg-teal-600 rounded-lg hover:bg-teal-500 transition-colors shadow-lg flex items-center whitespace-nowrap">
+                            <svg class="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v4m0 4h4m-4-4h4m8-4v10a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h10a2 2 0 012 2z" />
+                            </svg>
+                            Copy All Hex
+                        </button>
+                    </div>
+                    
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        ${colorsHtml}
+                    </div>
+                    
+                    ${preset.Description ? `<p class="mt-3 text-sm text-gray-400 italic">${preset.Description}</p>` : ''}
+                </div>
+            `;
+        };
+
+        // Function to filter and render presets
+        const filterAndRenderPresets = (searchTerm) => {
+            resultsContainer.innerHTML = '';
+            placeholderText.classList.add('hidden');
+            const searchLower = searchTerm.toLowerCase().trim();
+            let renderedCount = 0;
+            let htmlContent = '<div class="grid gap-6 grid-cols-1 md:grid-cols-2">';
+
+            if (Object.keys(allPresets).length === 0) {
+                placeholderText.classList.remove('hidden');
+                placeholderText.textContent = 'No data loaded yet.';
+                return;
+            }
+
+            for (const presetId in allPresets) {
+                const preset = allPresets[presetId];
+                if (preset.PrimaryColor) { // Ensure it's a valid color preset
+                    const displayName = preset.DisplayName || presetId;
+                    
+                    // Filter logic: Check if search term is in DisplayName or Preset ID
+                    if (displayName.toLowerCase().includes(searchLower) || 
+                        presetId.toLowerCase().includes(searchLower)) {
+                        
+                        htmlContent += renderPresetCard(presetId, preset);
+                        renderedCount++;
+                    }
+                }
+            }
+            
+            htmlContent += '</div>';
+
+            if (renderedCount > 0) {
+                resultsContainer.innerHTML = htmlContent;
+            } else {
+                resultsContainer.innerHTML = `<p class="text-center text-gray-500 p-10">No color presets match "${searchTerm}".</p>`;
+            }
+        };
+
+
+        // Main function to process the parsed JSON data
+        const processData = (data) => {
+            resultsContainer.innerHTML = '';
+            placeholderText.classList.add('hidden');
+            allPresets = {};
+
+            try {
+                if (!Array.isArray(data) || data.length === 0 || !data[0].Rows) {
+                    throw new Error("JSON structure is incorrect. Expected an array containing an object with a 'Rows' property.");
+                }
+
+                const rows = data[0].Rows;
+                allPresets = rows; // Store the data globally
+                
+                const presetKeys = Object.keys(rows);
+                const validCount = presetKeys.filter(key => rows[key].PrimaryColor).length;
+
+
+                if (validCount === 0) {
+                     displayMessage('No valid color presets found in the "Rows" object.', true);
+                     searchInput.disabled = true;
+                     placeholderText.classList.remove('hidden');
+                     return;
+                }
+                
+                // Initial render of all items
+                filterAndRenderPresets('');
+                searchInput.disabled = false;
+                displayMessage(`Successfully loaded and displayed ${validCount} color preset(s).`, false);
+
+            } catch (e) {
+                console.error("Processing Error:", e);
+                resultsContainer.innerHTML = '';
+                placeholderText.classList.remove('hidden');
+                searchInput.disabled = true;
+                displayMessage(`Error processing file: ${e.message}`, true);
+            }
+        };
+
+        // Reads the dropped/selected file
+        const readFile = (file) => {
+            if (file.type !== 'application/json' && !file.name.endsWith('.json')) {
+                displayMessage('Invalid file type. Please upload a .json file.', true);
+                return;
+            }
+
+            const reader = new FileReader();
+
+            reader.onload = (e) => {
+                try {
+                    const json = JSON.parse(e.target.result);
+                    processData(json);
+                } catch (error) {
+                    console.error('JSON Parse Error:', error);
+                    displayMessage('Invalid JSON format. Please ensure the file is correctly structured.', true);
+                    resultsContainer.innerHTML = '';
+                    placeholderText.classList.remove('hidden');
+                }
+            };
+
+            reader.onerror = () => {
+                displayMessage('Error reading file.', true);
+            };
+
+            reader.readAsText(file);
+        };
+
+
+        // --- Event Listeners ---
+
+        // Search Input Listener
+        searchInput.addEventListener('keyup', (e) => filterAndRenderPresets(e.target.value));
+
+
+        // Prevent default drag behaviors
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        // Highlight drop zone when dragging over
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-over'), false);
+        });
+
+        // Remove highlight when dragging leaves
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-over'), false);
+        });
+
+        // Handle file drop
+        dropZone.addEventListener('drop', (e) => {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files.length) {
+                readFile(files[0]);
+            }
+        }, false);
+
+        // Handle click to open file dialog
+        dropZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // Handle file selection from input
+        fileInput.addEventListener('change', (e) => {
+            const files = e.target.files;
+            if (files.length) {
+                readFile(files[0]);
+            }
+        });
+
+    </script>
+</body>
+</html>
